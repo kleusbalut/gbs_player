@@ -1,0 +1,310 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/rootScroll"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#101217"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:id="@+id/mainColumn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="20dp">
+
+        <FrameLayout
+            android:id="@+id/screenFrame"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <ImageView
+                android:id="@+id/screenView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:adjustViewBounds="true"
+                android:background="#0A0C10"
+                android:contentDescription="@string/screen_desc"
+                android:scaleType="fitCenter" />
+
+            <io.github.kleusbalut.gbsplayer.android.CoverGamepadView
+                android:id="@+id/coverGamepad"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@string/cover_controls_desc"
+                android:visibility="gone" />
+
+            <FrameLayout
+                android:id="@+id/menuOverlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#66000000"
+                android:clickable="true"
+                android:focusable="true"
+                android:padding="12dp"
+                android:visibility="gone">
+
+                <ScrollView
+                    android:id="@+id/menuScroll"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end|bottom"
+                    android:fillViewport="false"
+                    android:overScrollMode="ifContentScrolls">
+
+                    <LinearLayout
+                        android:id="@+id/menuPanel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="#F0111720"
+                        android:orientation="vertical"
+                        android:padding="8dp" />
+                </ScrollView>
+            </FrameLayout>
+
+            <FrameLayout
+                android:id="@+id/libraryOverlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#99000000"
+                android:clickable="true"
+                android:focusable="true"
+                android:padding="12dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/libraryPanel"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:layout_gravity="center"
+                    android:background="#E6111720"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <TextView
+                        android:id="@+id/libraryTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/library_title"
+                        android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+                        android:textColor="#F2F4F8"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/librarySubtitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/library_subtitle"
+                        android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+                        android:textColor="#A8B2C1" />
+
+                    <ScrollView
+                        android:id="@+id/libraryScroll"
+                        android:layout_width="match_parent"
+                        android:layout_height="0dp"
+                        android:layout_marginTop="10dp"
+                        android:layout_weight="1"
+                        android:fillViewport="false"
+                        android:overScrollMode="ifContentScrolls">
+
+                        <LinearLayout
+                            android:id="@+id/libraryRows"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+                    </ScrollView>
+                </LinearLayout>
+            </FrameLayout>
+        </FrameLayout>
+
+        <Space
+            android:id="@+id/flexBottomSpacer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/defaultControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:baselineAligned="false"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp">
+
+            <FrameLayout
+                android:id="@+id/defaultDpad"
+                android:layout_width="124dp"
+                android:layout_height="124dp"
+                android:layout_weight="0">
+
+                <TextView
+                    android:id="@+id/defaultUp"
+                    android:layout_width="44dp"
+                    android:layout_height="48dp"
+                    android:layout_gravity="top|center_horizontal"
+                    android:background="@drawable/default_gamepad_button"
+                    android:gravity="center"
+                    android:text="@string/up_symbol"
+                    android:textColor="#F3F4F6"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/defaultDown"
+                    android:layout_width="44dp"
+                    android:layout_height="48dp"
+                    android:layout_gravity="bottom|center_horizontal"
+                    android:background="@drawable/default_gamepad_button"
+                    android:gravity="center"
+                    android:text="@string/down_symbol"
+                    android:textColor="#F3F4F6"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/defaultLeft"
+                    android:layout_width="48dp"
+                    android:layout_height="44dp"
+                    android:layout_gravity="center_vertical|start"
+                    android:background="@drawable/default_gamepad_button"
+                    android:gravity="center"
+                    android:text="@string/left_symbol"
+                    android:textColor="#F3F4F6"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/defaultRight"
+                    android:layout_width="48dp"
+                    android:layout_height="44dp"
+                    android:layout_gravity="center_vertical|end"
+                    android:background="@drawable/default_gamepad_button"
+                    android:gravity="center"
+                    android:text="@string/right_symbol"
+                    android:textColor="#F3F4F6"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+            </FrameLayout>
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="end"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="104dp"
+                    android:gravity="end|center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/defaultB"
+                        android:layout_width="56dp"
+                        android:layout_height="56dp"
+                        android:layout_marginTop="20dp"
+                        android:layout_marginEnd="8dp"
+                        android:background="@drawable/default_gamepad_ab_button"
+                        android:gravity="center"
+                        android:text="@string/b_button"
+                        android:textColor="#F3F4F6"
+                        android:textSize="24sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/defaultA"
+                        android:layout_width="56dp"
+                        android:layout_height="56dp"
+                        android:background="@drawable/default_gamepad_ab_button"
+                        android:gravity="center"
+                        android:text="@string/a_button"
+                        android:textColor="#F3F4F6"
+                        android:textSize="24sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:gravity="end"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/defaultSelect"
+                        android:layout_width="56dp"
+                        android:layout_height="40dp"
+                        android:background="@drawable/default_gamepad_pill_button"
+                        android:gravity="center"
+                        android:text="@string/select"
+                        android:textColor="#111720"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/defaultStart"
+                        android:layout_width="56dp"
+                        android:layout_height="40dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/default_gamepad_pill_button"
+                        android:gravity="center"
+                        android:text="@string/start"
+                        android:textColor="#111720"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/defaultMenu"
+                        android:layout_width="56dp"
+                        android:layout_height="40dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/default_gamepad_pill_button"
+                        android:gravity="center"
+                        android:text="@string/menu_button"
+                        android:textColor="#111720"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+
+        <io.github.kleusbalut.gbsplayer.android.SkinControllerView
+            android:id="@+id/skinView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:contentDescription="@string/skin_controls_desc"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/trackText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:textAppearance="@style/TextAppearance.Material3.TitleMedium"
+            android:textColor="#F2F4F8"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/hintText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/background_hint"
+            android:textAppearance="@style/TextAppearance.Material3.BodySmall"
+            android:textColor="#8A93A3" />
+    </LinearLayout>
+</ScrollView>
