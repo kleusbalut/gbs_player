@@ -48,6 +48,8 @@ BUILD_SETTING_LINKS = {
     "adb_path": ("platform_tools_link", "https://developer.android.com/tools/releases/platform-tools"),
 }
 
+ADB_EXE = "adb.exe" if os.name == "nt" else "adb"
+
 
 HIRAGANA = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
 KATAKANA = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
@@ -106,8 +108,8 @@ STRINGS = {
     "remove_source": {"ja": "ソースを一覧から削除", "en": "Remove Source"},
     "reload_sources": {"ja": "前回のソースを再読み込み", "en": "Reload Previous Sources"},
     "open_sav": {"ja": "SAVを開く...", "en": "Open SAV..."},
-    "save_sav": {"ja": "SAVを保存", "en": "Save SAV"},
-    "save_sav_as": {"ja": "SAVを別名保存...", "en": "Save SAV As..."},
+    "save_sav": {"ja": "保存", "en": "Save"},
+    "save_sav_as": {"ja": "別名で保存", "en": "Save As"},
     "import_names": {"ja": "曲名リストを読み込む...", "en": "Import Song List..."},
     "export_names": {"ja": "曲名リストを書き出す...", "en": "Export Song List..."},
     "exit": {"ja": "終了", "en": "Exit"},
@@ -218,6 +220,22 @@ STRINGS = {
     "adb_no_device": {
         "ja": "デバイスが見つかりません。 ケーブル接続やデバッグ端末登録を確認して、Unityなど、Android向けビルドができるツールを終了してから「更新」を押してデバイスを選択してください。",
         "en": "No device found. Check the cable and device connection. Close Unity or other Android build tools, then press Refresh and select a device.",
+    },
+    "adb_not_found": {
+        "ja": "adb.exe が見つかりません。ビルド設定の ADB に Android SDK Platform-Tools の adb.exe を指定してください。",
+        "en": "adb.exe was not found. Set ADB in Build Settings to adb.exe from Android SDK Platform-Tools.",
+    },
+    "adb_auto_found": {
+        "ja": "ADBを自動検出しました: {path}",
+        "en": "Auto-detected ADB: {path}",
+    },
+    "adb_auto_search": {
+        "ja": "ADBが見つからないため、Android SDKの標準インストール先を検索します。",
+        "en": "ADB was not found, searching standard Android SDK install locations.",
+    },
+    "adb_no_ready_device": {
+        "ja": "ADBデバイスは検出されましたが、インストール可能な状態の端末がありません: {states}",
+        "en": "ADB devices were detected, but none are ready for install: {states}",
     },
     "refresh_adb": {"ja": "更新", "en": "Refresh"},
     "build_paths": {"ja": "ビルド設定", "en": "Build Settings"},
@@ -928,9 +946,6 @@ class SavEditorApp:
         self.menubar = tk.Menu(self.root)
         self.file_menu = tk.Menu(self.menubar, tearoff=0)
         self.file_menu.add_command(label=self.tr("open_gbs"), command=self._open_gbs, accelerator="Ctrl+O")
-        self.file_menu.add_command(label=self.tr("add_source"), command=self._open_gbs)
-        self.file_menu.add_command(label=self.tr("remove_source"), command=self._remove_current_source)
-        self.file_menu.add_command(label=self.tr("reload_sources"), command=self._restore_previous_sources)
         self.file_menu.add_command(label=self.tr("open_sav"), command=self._open_sav)
         self.file_menu.add_command(label=self.tr("save_sav"), command=self._save_sav, accelerator="Ctrl+S")
         self.file_menu.add_command(label=self.tr("save_sav_as"), command=self._save_sav_as)
@@ -951,7 +966,6 @@ class SavEditorApp:
         self.build_menu.add_command(label=self.tr("android_assets_all"), command=lambda: self._build_sources(self.entries, android_assets=True))
         self.build_menu.add_separator()
         self.build_menu.add_command(label=self.tr("android_apk"), command=self._build_android_apk)
-        self.build_menu.add_command(label=self.tr("android_install"), command=self._install_android_apk)
         self.build_menu.add_command(label=self.tr("android_build_install"), command=lambda: self._build_android_apk(install_after=True))
         self.build_menu.add_command(label=self.tr("android_build_install_all"), command=self._build_all_and_install)
         self.build_menu.add_separator()
@@ -1290,10 +1304,54 @@ class SavEditorApp:
     def _on_sync_option_change(self):
         self._save_config()
 
+    def _has_adb_device(self):
+        return any(serial for serial, _name in self.adb_devices)
+
+    def _show_no_adb_device(self):
+        msg = self.tr("adb_no_device")
+        self._set_status(msg)
+        self._log_event(msg)
+        self._update_state()
+
+    def _require_adb_device(self):
+        if not self._has_adb_device():
+            self._show_no_adb_device()
+            return False
+        self._on_adb_device_selected()
+        return True
+
+    def _begin_background_task(self, progress_max, log_message=None):
+        if self._build_running:
+            return False
+        self._build_running = True
+        self._set_progress(0, progress_max)
+        if log_message:
+            self._log_event(log_message)
+        self._update_state()
+        return True
+
+    def _finish_background_task(self, refresh_sources=False, save_config=False):
+        self._build_running = False
+        if refresh_sources:
+            self._refresh_sources()
+        self._set_progress(0, 100)
+        self._update_state()
+        if save_config:
+            self._save_config()
+
+    def _prepare_android_save_overwrite(self, entries):
+        overwrite_save = bool(self.overwrite_save_var.get())
+        if overwrite_save and self.sav:
+            self._sync_current_song_edit()
+            self._sync_metadata_fields()
+            self._store_active_entry()
+            return [entry for entry in entries if entry and entry.sav]
+        return None
+
     def _update_state(self):
         loaded = self.gbs_info is not None
         idle = not self._build_running
-        has_adb_device = any(serial for serial, _name in self.adb_devices)
+        has_adb_device = self._has_adb_device()
         adb_ready = idle and has_adb_device
         btn_state = "normal" if self.sav and idle else "disabled"
         for btn in (self.add_btn, self.del_btn, self.up_btn, self.down_btn, self.clear_btn):
@@ -1332,7 +1390,6 @@ class SavEditorApp:
                 self.tr("android_assets_selected"): bool(self.sav) and idle,
                 self.tr("android_assets_all"): bool(self.entries) and idle,
                 self.tr("android_apk"): idle,
-                self.tr("android_install"): adb_ready,
                 self.tr("android_build_install"): adb_ready,
                 self.tr("android_build_install_all"): bool(self.entries) and adb_ready,
                 self.tr("android_pull_sav"): bool(self.sav) and adb_ready,
@@ -2167,6 +2224,60 @@ class SavEditorApp:
                 self.adb_device_serial = ""
                 self.adb_device_choices = {}
 
+    def _set_adb_path_detected(self, path):
+        self.adb_path = path
+        if threading.current_thread() is threading.main_thread():
+            self.adb_path_var.set(path)
+            self._save_config()
+        else:
+            self.root.after(0, lambda: (self.adb_path_var.set(path), self._save_config()))
+
+    def _adb_default_candidates(self):
+        candidates = []
+
+        def add(path):
+            if path and path not in candidates:
+                candidates.append(path)
+
+        for env_name in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+            sdk_root = os.environ.get(env_name, "")
+            add(os.path.join(sdk_root, "platform-tools", ADB_EXE))
+
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        user_profile = os.environ.get("USERPROFILE", "")
+        add(os.path.join(local_app_data, "Android", "Sdk", "platform-tools", ADB_EXE))
+        add(os.path.join(user_profile, "AppData", "Local", "Android", "Sdk", "platform-tools", ADB_EXE))
+
+        for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+            program_files = os.environ.get(env_name, "")
+            add(os.path.join(program_files, "Android", "Android Studio", "Sdk", "platform-tools", ADB_EXE))
+            add(os.path.join(program_files, "Android", "Sdk", "platform-tools", ADB_EXE))
+
+        return candidates
+
+    def _format_adb_not_found_error(self, adb_path):
+        return f"{self.tr('adb_not_found')} ({self.tr('adb_path')} {adb_path})"
+
+    def _resolve_adb_path_sync(self):
+        self._sync_build_settings_vars()
+        adb_path = (self.adb_path.strip() or "adb").strip('"')
+        has_dir = os.path.dirname(adb_path) != ""
+        if has_dir and os.path.isfile(adb_path):
+            return adb_path
+        if not has_dir:
+            found = shutil.which(adb_path)
+            if found:
+                return found
+
+        self._append_log(self.tr("adb_auto_search") + "\n")
+        for candidate in self._adb_default_candidates():
+            if os.path.isfile(candidate):
+                self._set_adb_path_detected(candidate)
+                self._append_log(self.tr("adb_auto_found", path=candidate) + "\n")
+                self._log_event(self.tr("adb_auto_found", path=candidate))
+                return candidate
+        raise FileNotFoundError(self._format_adb_not_found_error(adb_path))
+
     def _browse_path_var(self, var, directory=False, filetypes=None, refresh_adb=False):
         if directory:
             path = filedialog.askdirectory(initialdir=var.get() or APP_DIR)
@@ -2258,40 +2369,69 @@ class SavEditorApp:
         self._update_state()
 
     def _list_adb_devices_sync(self):
-        self._sync_build_settings_vars()
-        cmd = [self.adb_path, "devices", "-l"]
+        adb_path = self._resolve_adb_path_sync()
+        cmd = [adb_path, "devices", "-l"]
         self._append_log("$ " + " ".join(cmd) + "\n")
-        proc = subprocess.run(
-            cmd,
-            cwd=APP_DIR,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=APP_DIR,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except FileNotFoundError:
+            raise FileNotFoundError(self._format_adb_not_found_error(adb_path))
         self._append_log(proc.stdout)
         if proc.returncode != 0:
             raise RuntimeError(f"command failed with exit code {proc.returncode}")
         devices = []
-        for line in proc.stdout.splitlines()[1:]:
+        non_ready = []
+        seen_header = False
+        for line in proc.stdout.splitlines():
             line = line.strip()
             if not line:
                 continue
+            if line.startswith("List of devices"):
+                seen_header = True
+                continue
+            if not seen_header:
+                continue
             parts = line.split()
-            if len(parts) >= 2 and parts[1] == "device":
+            state_idx = -1
+            for idx, part in enumerate(parts):
+                if part in ("device", "offline", "unauthorized", "recovery", "sideload"):
+                    state_idx = idx
+                    break
+                if part == "no" and idx + 1 < len(parts) and parts[idx + 1] == "permissions":
+                    state_idx = idx
+                    break
+            if state_idx <= 0:
+                continue
+            serial = " ".join(parts[:state_idx])
+            state = parts[state_idx]
+            if state == "no" and state_idx + 1 < len(parts):
+                state = "no permissions"
+            detail_parts = parts[state_idx + (2 if state == "no permissions" else 1):]
+            if state == "device":
                 model = ""
                 product = ""
                 device_name = ""
-                for part in parts[2:]:
+                for part in detail_parts:
                     if part.startswith("model:"):
                         model = part.split(":", 1)[1]
                     elif part.startswith("product:"):
                         product = part.split(":", 1)[1]
                     elif part.startswith("device:"):
                         device_name = part.split(":", 1)[1]
-                display_name = model or device_name or product or parts[0]
-                devices.append((parts[0], display_name))
+                display_name = model or device_name or product or serial
+                devices.append((serial, display_name))
+            else:
+                non_ready.append(f"{serial}={state}")
+        if non_ready:
+            self._append_log(self.tr("adb_no_ready_device", states=", ".join(non_ready)) + "\n")
         return devices
 
     def _refresh_adb_devices(self):
@@ -2302,25 +2442,32 @@ class SavEditorApp:
         self._update_state()
 
         def worker():
+            devices = None
+            error = None
             try:
                 devices = self._list_adb_devices_sync()
-                self.root.after(0, lambda: self._set_adb_device_values(devices))
-                if devices:
-                    self._log_event(f"{self.tr('refresh_adb')}: {len(devices)} device(s)")
-                else:
-                    msg = self.tr("adb_no_device")
-                    self._log_event(msg)
-                    self._post_status(msg)
             except Exception as e:
-                self._append_log(f"ERROR: {e}\n")
-                self._log_event(f"{self.tr('refresh_adb')}: ERROR: {e}")
-            finally:
-                def finish():
-                    self._build_running = False
-                    self._update_state()
-                    self._save_config()
-                    self._maybe_auto_sync_on_start()
-                self.root.after(0, finish)
+                error = e
+
+            def finish():
+                if error is not None:
+                    self._append_log(f"ERROR: {error}\n")
+                    self._log_event(f"{self.tr('refresh_adb')}: ERROR: {error}")
+                    self._set_adb_device_values([])
+                else:
+                    self._set_adb_device_values(devices or [])
+                    if devices:
+                        self._log_event(f"{self.tr('refresh_adb')}: {len(devices)} device(s)")
+                    else:
+                        msg = self.tr("adb_no_device")
+                        self._log_event(msg)
+                        self._post_status(msg)
+                self._build_running = False
+                self._update_state()
+                self._save_config()
+                self._maybe_auto_sync_on_start()
+
+            self.root.after(0, finish)
         threading.Thread(target=worker, daemon=True).start()
 
     def _maybe_auto_sync_on_start(self):
@@ -2467,19 +2614,15 @@ class SavEditorApp:
             messagebox.showinfo(self.tr("info"), self.tr("no_source_selected"))
             self._log_event(self.tr("no_source_selected"))
             return
-        if self._build_running:
-            return
         self._sync_build_settings_vars()
         self._sync_current_song_edit()
         self._store_active_entry()
-        self._build_running = True
-        self._set_progress(0, max(1, len(entries)))
         if len(entries) > 1:
             label = self.tr("android_assets_all" if android_assets else "build_all")
         else:
             label = self.tr("android_assets_selected" if android_assets else "build_selected")
-        self._log_event(f"{label} ({len(entries)})")
-        self._update_state()
+        if not self._begin_background_task(max(1, len(entries)), f"{label} ({len(entries)})"):
+            return
 
         def worker():
             try:
@@ -2487,11 +2630,7 @@ class SavEditorApp:
             except Exception:
                 pass
             def finish():
-                self._build_running = False
-                self._refresh_sources()
-                self._set_progress(0, 100)
-                self._update_state()
-                self._save_config()
+                self._finish_background_task(refresh_sources=True, save_config=True)
             self.root.after(0, finish)
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2532,8 +2671,8 @@ class SavEditorApp:
         return os.path.join(apk_dir, "app-debug.apk")
 
     def _adb_install_command(self, apk):
-        self._sync_build_settings_vars()
-        cmd = [self.adb_path]
+        adb_path = self._resolve_adb_path_sync()
+        cmd = [adb_path]
         serial = self.adb_device_serial.strip()
         if serial:
             cmd.extend(["-s", serial])
@@ -2541,8 +2680,8 @@ class SavEditorApp:
         return cmd
 
     def _adb_base_command(self):
-        self._sync_build_settings_vars()
-        cmd = [self.adb_path]
+        adb_path = self._resolve_adb_path_sync()
+        cmd = [adb_path]
         serial = self.adb_device_serial.strip()
         if serial:
             cmd.extend(["-s", serial])
@@ -2604,6 +2743,8 @@ class SavEditorApp:
                 stderr=subprocess.PIPE,
                 timeout=60,
             )
+        except FileNotFoundError:
+            raise FileNotFoundError(self._format_adb_not_found_error(cmd[0]))
         except subprocess.TimeoutExpired:
             raise RuntimeError("ADB command timed out")
         if proc.stdout and log_stdout:
@@ -2631,6 +2772,8 @@ class SavEditorApp:
                 errors="replace",
                 timeout=timeout,
             )
+        except FileNotFoundError:
+            raise FileNotFoundError(self._format_adb_not_found_error(cmd[0]))
         except subprocess.TimeoutExpired:
             raise RuntimeError("ADB command timed out")
         if proc.stdout:
@@ -2702,12 +2845,13 @@ class SavEditorApp:
             return False
         return raw.strip() == b"yes"
 
-    def _push_android_sav_sync(self, rom_ids, sav_data=None):
+    def _push_android_sav_sync(self, rom_ids, sav_data=None, prepare_device=True):
         target_sav = sav_data or self.sav
         if not target_sav:
             raise RuntimeError(self.tr("load_file_first"))
-        self._resolve_adb_device_serial_sync()
-        self._run_adb_logged_sync(["shell", "am", "force-stop", ANDROID_PACKAGE])
+        if prepare_device:
+            self._resolve_adb_device_serial_sync()
+            self._run_adb_logged_sync(["shell", "am", "force-stop", ANDROID_PACKAGE])
         existing_paths = self._list_android_sav_paths_sync()
         selected_paths = [self._android_sav_device_path(candidate) for candidate in rom_ids]
         device_path = next((path for path in selected_paths if path in existing_paths), None)
@@ -2731,33 +2875,22 @@ class SavEditorApp:
         for entry in entries:
             if not entry or not entry.sav:
                 continue
-            rom_id = self._push_android_sav_sync(self._android_rom_ids_for_entry(entry), sav_data=entry.sav)
+            rom_id = self._push_android_sav_sync(self._android_rom_ids_for_entry(entry), sav_data=entry.sav, prepare_device=False)
             pushed.append(rom_id)
         return pushed
 
     def _pull_android_sav(self):
-        if self._build_running:
-            return
         if not self.sav:
             messagebox.showinfo(self.tr("info"), self.tr("load_file_first"))
             return
-        if not any(serial for serial, _name in self.adb_devices):
-            msg = self.tr("adb_no_device")
-            self._set_status(msg)
-            self._log_event(msg)
-            self._update_state()
+        if not self._require_adb_device():
             return
-        self._on_adb_device_selected()
-        self._build_running = True
-        self._set_progress(0, 1)
-        self._log_event(self.tr("android_pull_sav"))
-        self._update_state()
+        if not self._begin_background_task(1, self.tr("android_pull_sav")):
+            return
         try:
             rom_ids = self._selected_android_rom_ids()
         except Exception as e:
-            self._build_running = False
-            self._set_progress(0, 100)
-            self._update_state()
+            self._finish_background_task()
             messagebox.showinfo(self.tr("info"), str(e))
             return
 
@@ -2791,38 +2924,25 @@ class SavEditorApp:
                 self._post_status(str(e))
             finally:
                 def finish():
-                    self._build_running = False
-                    self._set_progress(0, 100)
-                    self._update_state()
+                    self._finish_background_task()
                 self.root.after(0, finish)
         threading.Thread(target=worker, daemon=True).start()
 
     def _push_android_sav(self):
-        if self._build_running:
-            return
         if not self.sav:
             messagebox.showinfo(self.tr("info"), self.tr("load_file_first"))
             return
-        if not any(serial for serial, _name in self.adb_devices):
-            msg = self.tr("adb_no_device")
-            self._set_status(msg)
-            self._log_event(msg)
-            self._update_state()
+        if not self._require_adb_device():
             return
-        self._on_adb_device_selected()
         self._sync_current_song_edit()
         self._sync_metadata_fields()
         self._store_active_entry()
-        self._build_running = True
-        self._set_progress(0, 1)
-        self._log_event(self.tr("android_push_sav"))
-        self._update_state()
+        if not self._begin_background_task(1, self.tr("android_push_sav")):
+            return
         try:
             rom_ids = self._selected_android_rom_ids()
         except Exception as e:
-            self._build_running = False
-            self._set_progress(0, 100)
-            self._update_state()
+            self._finish_background_task()
             messagebox.showinfo(self.tr("info"), str(e))
             return
 
@@ -2839,9 +2959,7 @@ class SavEditorApp:
                 self._post_status(str(e))
             finally:
                 def finish():
-                    self._build_running = False
-                    self._set_progress(0, 100)
-                    self._update_state()
+                    self._finish_background_task()
                 self.root.after(0, finish)
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2858,26 +2976,13 @@ class SavEditorApp:
         return apk
 
     def _install_android_apk(self):
-        if self._build_running:
+        if not self._require_adb_device():
             return
-        if not any(serial for serial, _name in self.adb_devices):
-            msg = self.tr("adb_no_device")
-            self._set_status(msg)
-            self._log_event(msg)
-            self._update_state()
-            return
-        self._on_adb_device_selected()
         self._sync_build_settings_vars()
-        overwrite_save = bool(self.overwrite_save_var.get())
-        if overwrite_save and self.sav:
-            self._sync_current_song_edit()
-            self._sync_metadata_fields()
-            self._store_active_entry()
-        overwrite_entries = [self._current_entry()] if overwrite_save else None
-        self._build_running = True
-        self._set_progress(0, 1)
-        self._log_event(self.tr("android_install"))
-        self._update_state()
+        overwrite_entries = self._prepare_android_save_overwrite([self._current_entry()])
+        overwrite_save = overwrite_entries is not None
+        if not self._begin_background_task(1, self.tr("android_install")):
+            return
 
         def worker():
             try:
@@ -2891,9 +2996,7 @@ class SavEditorApp:
                 self._post_status(self.tr("build_failed", name="Android install"))
             finally:
                 def finish():
-                    self._build_running = False
-                    self._set_progress(0, 100)
-                    self._update_state()
+                    self._finish_background_task()
                 self.root.after(0, finish)
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2908,27 +3011,14 @@ class SavEditorApp:
         return self._android_apk_path()
 
     def _build_android_apk(self, install_after=False):
-        if self._build_running:
+        if install_after and not self._require_adb_device():
             return
-        if install_after and not any(serial for serial, _name in self.adb_devices):
-            msg = self.tr("adb_no_device")
-            self._set_status(msg)
-            self._log_event(msg)
-            self._update_state()
-            return
-        if install_after:
-            self._on_adb_device_selected()
         self._sync_build_settings_vars()
-        overwrite_save = bool(self.overwrite_save_var.get()) if install_after else False
-        if overwrite_save and self.sav:
-            self._sync_current_song_edit()
-            self._sync_metadata_fields()
-            self._store_active_entry()
-        overwrite_entries = [self._current_entry()] if overwrite_save else None
-        self._build_running = True
-        self._set_progress(0, 2 if install_after else 1)
-        self._log_event(self.tr("android_build_install") if install_after else self.tr("android_apk"))
-        self._update_state()
+        overwrite_entries = self._prepare_android_save_overwrite([self._current_entry()]) if install_after else None
+        overwrite_save = overwrite_entries is not None
+        label = self.tr("android_build_install") if install_after else self.tr("android_apk")
+        if not self._begin_background_task(2 if install_after else 1, label):
+            return
 
         def worker():
             try:
@@ -2947,9 +3037,7 @@ class SavEditorApp:
                 self._post_status(self.tr("build_failed", name="Android APK"))
             finally:
                 def finish():
-                    self._build_running = False
-                    self._set_progress(0, 100)
-                    self._update_state()
+                    self._finish_background_task()
                 self.root.after(0, finish)
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2958,28 +3046,15 @@ class SavEditorApp:
             messagebox.showinfo(self.tr("info"), self.tr("no_source_selected"))
             self._log_event(self.tr("no_source_selected"))
             return
-        if self._build_running:
+        if not self._require_adb_device():
             return
-        if not any(serial for serial, _name in self.adb_devices):
-            msg = self.tr("adb_no_device")
-            self._set_status(msg)
-            self._log_event(msg)
-            self._update_state()
-            return
-        self._on_adb_device_selected()
         self._sync_build_settings_vars()
-        overwrite_save = bool(self.overwrite_save_var.get())
-        if overwrite_save and self.sav:
-            self._sync_current_song_edit()
-            self._sync_metadata_fields()
-            self._store_active_entry()
         self._sync_current_song_edit()
         self._store_active_entry()
-        overwrite_entries = list(self.entries) if overwrite_save else None
-        self._build_running = True
-        self._set_progress(0, len(self.entries) + 2)
-        self._log_event(self.tr("android_build_install_all"))
-        self._update_state()
+        overwrite_entries = self._prepare_android_save_overwrite(self.entries)
+        overwrite_save = overwrite_entries is not None
+        if not self._begin_background_task(len(self.entries) + 2, self.tr("android_build_install_all")):
+            return
 
         def worker():
             try:
@@ -2998,11 +3073,7 @@ class SavEditorApp:
                 self._post_status(self.tr("build_failed", name=self.tr("android_build_install_all")))
             finally:
                 def finish():
-                    self._build_running = False
-                    self._refresh_sources()
-                    self._set_progress(0, 100)
-                    self._update_state()
-                    self._save_config()
+                    self._finish_background_task(refresh_sources=True, save_config=True)
                 self.root.after(0, finish)
         threading.Thread(target=worker, daemon=True).start()
 
