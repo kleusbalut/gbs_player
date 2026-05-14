@@ -53,6 +53,11 @@ class MainActivity : ComponentActivity() {
         val title: String,
     )
 
+    private data class PlayerModeButton(
+        val action: Int,
+        val bounds: Rect,
+    )
+
     private enum class LibraryEntryKind {
         BUNDLED,
         REGISTERED,
@@ -85,8 +90,10 @@ class MainActivity : ComponentActivity() {
     private var flexModeActive = false
     private var coverModeActive = false
     private var importedSkinActive = false
+    private var playerModeActive = false
     private val defaultPressedKeys = mutableSetOf<Int>()
     private val defaultPointerKeys = mutableMapOf<Int, Set<Int>>()
+    private val playerPointerActions = mutableMapOf<Int, Int>()
 
     private val skinPicker = registerForActivityResult(OpenDocument()) { uri ->
         if (uri == null) return@registerForActivityResult
@@ -142,12 +149,9 @@ class MainActivity : ComponentActivity() {
         )
         binding.screenView.setImageBitmap(bitmap)
         applyScreenColorFilter()
-        binding.screenView.setOnClickListener {
-            if (binding.libraryOverlay.visibility == View.VISIBLE) {
-                hideLibraryOverlay()
-            } else {
-                dismissMenu()
-            }
+        binding.screenView.isClickable = true
+        binding.screenView.setOnTouchListener { _, event ->
+            handleScreenTouch(event)
         }
         binding.libraryOverlay.setOnClickListener {
             hideLibraryOverlay()
@@ -218,6 +222,7 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         dismissMenu()
         hideLibraryOverlay()
+        releasePlayerModeTouches()
         releaseDefaultControlKeys()
         binding.coverGamepad.releaseKeys()
         session?.setUiVisible(false)
@@ -229,6 +234,10 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             newSession.snapshot.collect { snapshot ->
                 if (session !== newSession) return@collect
+                if (!snapshot.playerMode && playerModeActive) {
+                    releasePlayerModeTouches()
+                }
+                playerModeActive = snapshot.playerMode
                 binding.trackText.text = "${snapshot.trackNumber}. ${snapshot.trackName}"
             }
         }
@@ -291,6 +300,70 @@ class MainActivity : ComponentActivity() {
             true
         }
         listOf(binding.defaultControls, binding.skinView, binding.coverGamepad).forEach(::excludeGamepadFromSystemGestures)
+    }
+
+    private fun handleScreenTouch(event: MotionEvent): Boolean {
+        if (playerModeActive && binding.libraryOverlay.visibility != View.VISIBLE && binding.menuOverlay.visibility != View.VISIBLE) {
+            handlePlayerModeScreenTouch(event)
+            return true
+        }
+
+        if (event.actionMasked == MotionEvent.ACTION_UP) {
+            if (binding.libraryOverlay.visibility == View.VISIBLE) {
+                hideLibraryOverlay()
+            } else {
+                dismissMenu()
+            }
+        }
+        return true
+    }
+
+    private fun handlePlayerModeScreenTouch(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_POINTER_DOWN,
+            -> {
+                val pointerId = event.getPointerId(event.actionIndex)
+                val action = resolvePlayerModeAction(event.getX(event.actionIndex), event.getY(event.actionIndex))
+                if (action != null) {
+                    playerPointerActions[pointerId] = action
+                    session?.sendCommand(EmulatorSession.CMD_PLAYER_DOWN, action)
+                }
+                binding.screenView.parent?.requestDisallowInterceptTouchEvent(true)
+            }
+
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_POINTER_UP,
+            -> {
+                val pointerId = event.getPointerId(event.actionIndex)
+                playerPointerActions.remove(pointerId)?.let { action ->
+                    session?.sendCommand(EmulatorSession.CMD_PLAYER_UP, action)
+                }
+                if (event.actionMasked == MotionEvent.ACTION_UP || playerPointerActions.isEmpty()) {
+                    binding.screenView.parent?.requestDisallowInterceptTouchEvent(false)
+                }
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                releasePlayerModeTouches()
+                binding.screenView.parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+    }
+
+    private fun releasePlayerModeTouches() {
+        playerPointerActions.values.toList().forEach { action ->
+            session?.sendCommand(EmulatorSession.CMD_PLAYER_UP, action)
+        }
+        playerPointerActions.clear()
+    }
+
+    private fun resolvePlayerModeAction(viewX: Float, viewY: Float): Int? {
+        val game = gameScreenRect(binding.screenView.width.toFloat(), binding.screenView.height.toFloat())
+        if (!game.contains(viewX, viewY)) return null
+        val gbX = ((viewX - game.left) * EmulatorSession.SCREEN_WIDTH / game.width()).toInt()
+        val gbY = ((viewY - game.top) * EmulatorSession.SCREEN_HEIGHT / game.height()).toInt()
+        return playerModeButtons.firstOrNull { it.bounds.contains(gbX, gbY) }?.action
     }
 
     private fun observeFoldState() {
@@ -559,6 +632,22 @@ class MainActivity : ComponentActivity() {
             ).coerceAtLeast(1)
         val screenHeight = contentWidth * EmulatorSession.SCREEN_HEIGHT / EmulatorSession.SCREEN_WIDTH
         return screenHeight + if (flexLayout) dp(56) else 0
+    }
+
+    private fun gameScreenRect(viewWidth: Float, viewHeight: Float): RectF {
+        val gameAspect = EmulatorSession.SCREEN_WIDTH.toFloat() / EmulatorSession.SCREEN_HEIGHT.toFloat()
+        val viewAspect = viewWidth / viewHeight
+        return if (viewAspect > gameAspect) {
+            val gameHeight = viewHeight
+            val gameWidth = gameHeight * gameAspect
+            val left = (viewWidth - gameWidth) / 2f
+            RectF(left, 0f, left + gameWidth, gameHeight)
+        } else {
+            val gameWidth = viewWidth
+            val gameHeight = gameWidth / gameAspect
+            val top = (viewHeight - gameHeight) / 2f
+            RectF(0f, top, gameWidth, top + gameHeight)
+        }
     }
 
     private fun configureMainColumnLayout() {
@@ -1505,6 +1594,14 @@ class MainActivity : ComponentActivity() {
         private const val MENU_SETTINGS = 6
         private const val MENU_INVERT_SCREEN = 7
         private const val COVER_DISPLAY_LONG_SIDE_DP = 600
+        private val playerModeButtons = listOf(
+            PlayerModeButton(EmulatorSession.PLAYER_ACTION_PREV, Rect(0, 56, 56, 80)),
+            PlayerModeButton(EmulatorSession.PLAYER_ACTION_TOGGLE, Rect(56, 56, 104, 80)),
+            PlayerModeButton(EmulatorSession.PLAYER_ACTION_NEXT, Rect(104, 56, 160, 80)),
+            PlayerModeButton(EmulatorSession.PLAYER_ACTION_BACK, Rect(0, 96, 48, 120)),
+            PlayerModeButton(EmulatorSession.PLAYER_ACTION_STOP, Rect(56, 96, 104, 120)),
+            PlayerModeButton(EmulatorSession.PLAYER_ACTION_RPT, Rect(112, 96, 160, 120)),
+        )
         private val INVERT_COLOR_MATRIX = floatArrayOf(
             -1f, 0f, 0f, 0f, 255f,
             0f, -1f, 0f, 0f, 255f,

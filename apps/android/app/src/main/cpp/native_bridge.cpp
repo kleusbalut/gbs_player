@@ -26,6 +26,7 @@ constexpr uint8_t COMMAND_ARG_OFFSET = 0xEF - HRAM_BASE;
 constexpr uint8_t STATUS_DURATION_LO_OFFSET = 0xF0 - HRAM_BASE;
 constexpr uint8_t STATUS_DURATION_HI_OFFSET = 0xF1 - HRAM_BASE;
 constexpr uint8_t STATUS_REPEAT_OFFSET = 0xF2 - HRAM_BASE;
+constexpr uint8_t STATUS_VIEW_OFFSET = 0xF3 - HRAM_BASE;
 constexpr size_t QUEUE_TARGET_FRAMES = SAMPLE_RATE / 10;
 constexpr size_t QUEUE_MAX_FRAMES = SAMPLE_RATE / 4;
 constexpr auto SAVE_FLUSH_INTERVAL = std::chrono::seconds(2);
@@ -317,22 +318,23 @@ Java_io_github_kleusbalut_gbsplayer_android_NativeBridge_nativeGetStatus(
     jlong handle)
 {
     auto *state = reinterpret_cast<EmulatorState *>(handle);
-    jint values[6] = {0, 0, 0, 0, 0, 0};
+    jint values[7] = {0, 0, 0, 0, 0, 0, 0};
     if (state) {
         std::scoped_lock lock(state->mutex);
         size_t size = 0;
         auto *hram = static_cast<uint8_t *>(GB_get_direct_access(&state->gb, GB_DIRECT_ACCESS_HRAM, &size, nullptr));
-        if (hram && size > STATUS_REPEAT_OFFSET && hram[STATUS_MAGIC_OFFSET] == 0x47) {
+        if (hram && size > STATUS_VIEW_OFFSET && hram[STATUS_MAGIC_OFFSET] == 0x47) {
             values[0] = hram[STATUS_SONG_OFFSET];
             values[1] = (hram[STATUS_FLAGS_OFFSET] & 0x01) ? 1 : 0;
             values[2] = (hram[STATUS_FLAGS_OFFSET] & 0x02) ? 1 : 0;
             values[3] = hram[STATUS_SECONDS_LO_OFFSET] | (hram[STATUS_SECONDS_HI_OFFSET] << 8);
             values[4] = hram[STATUS_DURATION_LO_OFFSET] | (hram[STATUS_DURATION_HI_OFFSET] << 8);
             values[5] = hram[STATUS_REPEAT_OFFSET];
+            values[6] = hram[STATUS_VIEW_OFFSET];
         }
     }
-    jintArray result = env->NewIntArray(6);
-    env->SetIntArrayRegion(result, 0, 6, values);
+    jintArray result = env->NewIntArray(7);
+    env->SetIntArrayRegion(result, 0, 7, values);
     return result;
 }
 

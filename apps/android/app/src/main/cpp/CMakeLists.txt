@@ -46,6 +46,10 @@ target_compile_definitions(
     GB_DISABLE_REWIND=1
 )
 
+if(ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "x86_64")
+    target_link_options(gbsplayer PRIVATE "-Wl,-z,max-page-size=16384")
+endif()
+
 target_link_libraries(
     gbsplayer
     android

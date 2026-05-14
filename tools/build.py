@@ -168,6 +168,14 @@ def _detect_compat_from_title(title):
     raw = title.encode("ascii", errors="ignore")
     return _detect_compat(raw, "")
 
+def _detect_compat_from_gbs_path(path):
+    name = os.path.basename(path).upper()
+    for part in name.replace(".", "-").split("-"):
+        compat = _detect_compat(b"", part)
+        if compat:
+            return compat
+    return COMPAT_NONE
+
 def _rom_ascii(raw, start, size):
     return raw[start:start + size].split(b"\x00", 1)[0].decode("ascii", errors="replace").strip()
 
@@ -479,7 +487,10 @@ def parse_gbs(path):
         except ValueError as e:
             sys.exit(f"ERROR: {e}")
         h["payload"] = raw[0x70:]
-        h["compat"] = _detect_compat_from_title(h.get("title", ""))
+        h["compat"] = (
+            _detect_compat_from_title(h.get("title", "")) or
+            _detect_compat_from_gbs_path(path)
+        )
         return h
     try:
         return _parse_rom_as_gbs(path, raw)
@@ -1183,6 +1194,21 @@ def cmd_merge(player_path, gbs_path, out_path):
                 0xC9,                   # ret
             ])
 
+            if not rb_family:
+                rb_delayframe = bytearray()
+                rb_delayframes = bytearray()
+                rb_resolve_bank = bytearray()
+                rb_playsound = bytearray()
+                rb_playmusic = bytearray()
+                rb_waitsound = bytearray()
+                rb_waitonly = bytearray()
+                rb_delayframes_addr = rb_delayframe_addr
+                rb_resolve_bank_addr = rb_delayframes_addr
+                rb_playsound_addr = rb_resolve_bank_addr
+                rb_playmusic_addr = rb_playsound_addr
+                rb_waitsound_addr = rb_playmusic_addr
+                rb_waitonly_addr = rb_waitsound_addr
+
             # RST $28 handler placed in gap (11 bytes):
             # table lookup via HL=table_base, A=index -> JP table[A*2]
             rst28_handler = bytearray([
@@ -1212,23 +1238,23 @@ def cmd_merge(player_path, gbs_path, out_path):
 
             helper_end = memset_addr + len(memset_loop)
             rb_play_dispatch_addr = helper_end
-            rb_init_dbg_end = rb_play_dispatch_addr + 27
-            rb_play_dispatch = bytearray([
-                0xCD, rb_resolve_bank_addr & 0xFF, (rb_resolve_bank_addr >> 8) & 0xFF,
-                0xFE, 0x01,             # cp   $01
-                0x20, 0x05,             # jr   nz, .check_bank2
-                0xCD, 0x03, 0x51,       # call $5103
-                0x18, 0x0F,             # jr   .done
-                0xFE, 0x02,             # .check_bank2: cp   $02
-                0x20, 0x08,             # jr   nz, .bank3
-                0xCD, 0x6E, 0x53,       # call $536E
-                0xCD, 0x79, 0x58,       # call $5879
-                0x18, 0x03,             # jr   .done
-                0xCD, 0x77, 0x51,       # .bank3: call $5177
-                0xC9,                   # .done: ret
-            ])
+            rb_play_dispatch = bytearray()
             if rb_family:
-                helper_end = rb_init_dbg_end
+                rb_play_dispatch = bytearray([
+                    0xCD, rb_resolve_bank_addr & 0xFF, (rb_resolve_bank_addr >> 8) & 0xFF,
+                    0xFE, 0x01,             # cp   $01
+                    0x20, 0x05,             # jr   nz, .check_bank2
+                    0xCD, 0x03, 0x51,       # call $5103
+                    0x18, 0x0F,             # jr   .done
+                    0xFE, 0x02,             # .check_bank2: cp   $02
+                    0x20, 0x08,             # jr   nz, .bank3
+                    0xCD, 0x6E, 0x53,       # call $536E
+                    0xCD, 0x79, 0x58,       # call $5879
+                    0x18, 0x03,             # jr   .done
+                    0xCD, 0x77, 0x51,       # .bank3: call $5177
+                    0xC9,                   # .done: ret
+                ])
+                helper_end = rb_play_dispatch_addr + len(rb_play_dispatch)
             if helper_end > load:
                 sys.exit("ERROR: not enough Bank 0 gap space for GBS helpers")
 
@@ -1248,7 +1274,8 @@ def cmd_merge(player_path, gbs_path, out_path):
             if needs_jumptable:
                 write_rom(rom, rst28_handler_addr, rst28_handler)
             write_rom(rom, memset_addr,           memset_loop)
-            write_rom(rom, rb_play_dispatch_addr, rb_play_dispatch)
+            if rb_family:
+                write_rom(rom, rb_play_dispatch_addr, rb_play_dispatch)
 
             c_profile_direct_bank_patches = 0
             if c_family:
@@ -1365,12 +1392,12 @@ def cmd_merge(player_path, gbs_path, out_path):
                 if gap_start <= target < load and rom[target] in (0xC9, 0xFF):
                     rom[target] = 0xE9  # JP HL
 
-            if rom[0x3740] in (0xC9, 0xFF):
+            if rb_family and rom[0x3740] in (0xC9, 0xFF):
                 rom[0x3740] = 0xC3
                 rom[0x3741] = rb_waitsound_addr & 0xFF
                 rom[0x3742] = (rb_waitsound_addr >> 8) & 0xFF
 
-            if rom[0x3748] in (0xC9, 0xFF):
+            if rb_family and rom[0x3748] in (0xC9, 0xFF):
                 rom[0x3748] = 0xC3
                 rom[0x3749] = rb_waitonly_addr & 0xFF
                 rom[0x374A] = (rb_waitonly_addr >> 8) & 0xFF

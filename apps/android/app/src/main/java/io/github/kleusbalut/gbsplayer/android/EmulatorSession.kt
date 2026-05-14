@@ -25,6 +25,7 @@ data class PlaybackSnapshot(
     val elapsedSeconds: Int,
     val durationSeconds: Int,
     val repeatMode: Int,
+    val playerMode: Boolean,
     val debugText: String = "",
 ) {
     val statusLabel: String
@@ -228,6 +229,7 @@ class EmulatorSession(private val installedRom: InstalledRom) {
             elapsedSeconds = status[3].coerceAtLeast(0),
             durationSeconds = status[4].coerceAtLeast(0),
             repeatMode = status[5].coerceIn(0, 2),
+            playerMode = status.getOrNull(6) == VIEW_PLAYER,
             debugText = debugText,
         )
     }
@@ -318,6 +320,7 @@ class EmulatorSession(private val installedRom: InstalledRom) {
             elapsedSeconds = 0,
             durationSeconds = 0,
             repeatMode = 0,
+            playerMode = false,
             debugText = "",
         )
     }
@@ -337,6 +340,15 @@ class EmulatorSession(private val installedRom: InstalledRom) {
         const val CMD_NEXT = 3
         const val CMD_PREV = 4
         const val CMD_REPEAT = 6
+        const val CMD_PLAYER_DOWN = 7
+        const val CMD_PLAYER_UP = 8
+
+        const val PLAYER_ACTION_PREV = 0
+        const val PLAYER_ACTION_TOGGLE = 1
+        const val PLAYER_ACTION_NEXT = 2
+        const val PLAYER_ACTION_BACK = 3
+        const val PLAYER_ACTION_STOP = 4
+        const val PLAYER_ACTION_RPT = 5
 
         const val SCREEN_WIDTH = 160
         const val SCREEN_HEIGHT = 144
@@ -351,5 +363,6 @@ class EmulatorSession(private val installedRom: InstalledRom) {
         private const val BACKGROUND_STATUS_DELAY_MS = 1000L
         private const val BACKGROUND_IDLE_TIMEOUT_MS = 300_000L
         private const val BACKGROUND_IDLE_SLEEP_MS = 500L
+        private const val VIEW_PLAYER = 3
     }
 }

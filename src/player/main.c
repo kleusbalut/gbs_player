@@ -115,6 +115,7 @@
 #define ANDROID_STATUS_DUR_LO_ADDR  (*((volatile UINT8 *)0xFFF0))
 #define ANDROID_STATUS_DUR_HI_ADDR  (*((volatile UINT8 *)0xFFF1))
 #define ANDROID_STATUS_REPEAT_ADDR  (*((volatile UINT8 *)0xFFF2))
+#define ANDROID_STATUS_VIEW_ADDR    (*((volatile UINT8 *)0xFFF3))
 
 #ifndef GBS_VOL_SHADOW_ADDR
 #define GBS_VOL_SHADOW_ADDR 0x0000
@@ -157,6 +158,12 @@ static UINT8 prev_view; // オプション画面を開く前のview (B押下で�
 static UINT8 opt_items[8]; // オプション項目IDリスト
 static UINT8 opt_count; // オプション項目数
 static UINT8 opt_song;  // オプション画面で操作対象の曲番号
+
+static UINT8 player_sel;
+static UINT8 player_prev_view;
+static UINT8 player_press_action;
+static UINT8 player_press_timer;
+static UINT16 player_cursor_timer;
 
 static UINT8 fb[SCR_H][SCR_W];
 static palette_color_t pal[4];
@@ -215,6 +222,22 @@ static UINT8 sel_triggered; // SELECT長押し発動フラグ
 #define ANDROID_CMD_NEXT   3u
 #define ANDROID_CMD_PREV   4u
 #define ANDROID_CMD_REPEAT 6u
+#define ANDROID_CMD_PLAYER_DOWN 7u
+#define ANDROID_CMD_PLAYER_UP   8u
+
+#define VIEW_SONGS 0u
+#define VIEW_PL    1u
+#define VIEW_OPT   2u
+#define VIEW_PLAYER 3u
+
+#define PLAYER_ACT_PREV   0u
+#define PLAYER_ACT_TOGGLE 1u
+#define PLAYER_ACT_NEXT   2u
+#define PLAYER_ACT_BACK   3u
+#define PLAYER_ACT_STOP   4u
+#define PLAYER_ACT_RPT    5u
+#define PLAYER_ACT_NONE   0xFFu
+#define PLAYER_CURSOR_TIMEOUT 1800u
 
 #ifndef GBS_TITLE_ENC_DEFINED
 static const UINT8 GBS_TITLE_ENC[32] = {0};
@@ -243,11 +266,11 @@ static void runtime_set_play_state(UINT8 is_playing, UINT8 is_paused);
 static UINT8 get_default_track_time(UINT8 song);
 
 static const UINT8 *display_title(void) {
-    return sav.custom_title[0] ? (const UINT8 *)sav.custom_title : GBS_TITLE_ENC;
+    return (sav.name_magic == NAME_MAGIC && sav.custom_title[0]) ? (const UINT8 *)sav.custom_title : GBS_TITLE_ENC;
 }
 
 static const UINT8 *display_author(void) {
-    return sav.custom_author[0] ? (const UINT8 *)sav.custom_author : GBS_AUTHOR_ENC;
+    return (sav.name_magic == NAME_MAGIC && sav.custom_author[0]) ? (const UINT8 *)sav.custom_author : GBS_AUTHOR_ENC;
 }
 
 static void reset_fade_state(void) {
@@ -285,6 +308,7 @@ static void sync_android_status(void) {
     ANDROID_STATUS_DUR_LO_ADDR = (UINT8)(duration_secs & 0xFFu);
     ANDROID_STATUS_DUR_HI_ADDR = (UINT8)(duration_secs >> 8);
     ANDROID_STATUS_REPEAT_ADDR = sav.repeat;
+    ANDROID_STATUS_VIEW_ADDR = view;
 }
 
 #if GBS_COMPAT_RB
@@ -582,6 +606,10 @@ static void sav_load(void) {
         for (i = 0; i < (UINT8)GBS_NUM_SONGS; i++)
             sav.track_time[i] = get_default_track_time(i);
         sav.name_magic = 0;
+    }
+    if (sav.name_magic != NAME_MAGIC) {
+        sav.custom_title[0] = 0u;
+        sav.custom_author[0] = 0u;
     }
 }
 
@@ -1068,6 +1096,42 @@ static void fb_duration(void) {
     }
 }
 
+static void fb_player_button(UINT8 x, UINT8 y, UINT8 w, const char *label, UINT8 action) {
+    UINT8 i, len, tx, pressed, selected;
+    pressed = (player_press_action == action);
+    selected = (player_cursor_timer && player_sel == action);
+    len = 0;
+    while (label[len]) len++;
+
+    fb[y][x] = T_CORNER_TL;
+    for (i = 1u; i + 1u < w; i++) {
+        fb[y][(UINT8)(x + i)] = pressed ? T_BAR_H_CTR : T_BAR_H_TOP;
+    }
+    fb[y][(UINT8)(x + w - 1u)] = T_CORNER_TR;
+
+    fb[(UINT8)(y + 1u)][x] = T_BAR_V_LEFT;
+    for (i = 1u; i + 1u < w; i++) {
+        fb[(UINT8)(y + 1u)][(UINT8)(x + i)] = T_SPACE;
+    }
+    fb[(UINT8)(y + 1u)][(UINT8)(x + w - 1u)] = T_BAR_V_RIGHT;
+
+    fb[(UINT8)(y + 2u)][x] = T_CORNER_BL;
+    for (i = 1u; i + 1u < w; i++) {
+        fb[(UINT8)(y + 2u)][(UINT8)(x + i)] = pressed ? T_BAR_H_BOT : T_BAR_H_BOT;
+    }
+    fb[(UINT8)(y + 2u)][(UINT8)(x + w - 1u)] = T_CORNER_BR;
+
+    tx = (UINT8)(x + ((w - len) / 2u));
+    fb_str(tx, (UINT8)(y + 1u), label);
+    if (selected) {
+        fb[(UINT8)(y + 1u)][x] = CHR('>');
+    }
+    if (pressed) {
+        fb[y][(UINT8)(x + 1u)] = T_BAR_H_CTR;
+        fb[(UINT8)(y + 2u)][(UINT8)(x + 1u)] = T_BAR_H_CTR;
+    }
+}
+
 // 曲名スクロール行更新
 static void scroll_name_row(UINT8 row, UINT8 song, UINT8 show_number) {
     UINT8 j;
@@ -1137,7 +1201,7 @@ static void build_fb(void) {
     // ── フレーム: 上枠 (row 0) + タイトル ──
     fb[0][0] = T_CORNER_TL;
     fb[0][19] = T_CORNER_TR;
-    fb_enc_scroll_static(1, 0, display_title(), 18, header_scroll_pos);
+    fb_enc_scroll_static(1, 0, display_title(), 18, (view == VIEW_PLAYER) ? 0u : header_scroll_pos);
 
     // ── フレーム: 左右枠 (rows 1-3) ──
     for (i = 1; i <= 3; i++) {
@@ -1153,7 +1217,7 @@ static void build_fb(void) {
             fb_enc_scroll(1, 1, pnm, 18, name_scroll_pos);
     }
     // Row 2: 作曲者
-    fb_enc_scroll_static(1, 2, display_author(), 18, header_scroll_pos);
+    fb_enc_scroll_static(1, 2, display_author(), 18, (view == VIEW_PLAYER) ? 0u : header_scroll_pos);
 
     // Row 3: ステータス行
     {
@@ -1182,7 +1246,21 @@ static void build_fb(void) {
                     (sav.repeat == 1u) ? T_RPT_ONE  : T_RPT_ALL;
     }
 
-    if (view == 2u) {
+    if (view == VIEW_PLAYER) {
+        fb[4][0] = T_CORNER_BL;
+        fb[4][1] = T_BRACKET_BL;
+        fb_str(2, 4, "PLAYER");
+        fb[4][9] = T_BRACKET_BR;
+        for (j = 10; j < 19; j++) fb[4][j] = T_BAR_H_BOT;
+        fb[4][19] = T_CORNER_BR;
+
+        fb_player_button(0, 7, 7, "PREV", PLAYER_ACT_PREV);
+        fb_player_button(7, 7, 6, (playing && !paused) ? "PAUS" : "PLAY", PLAYER_ACT_TOGGLE);
+        fb_player_button(13, 7, 7, "NEXT", PLAYER_ACT_NEXT);
+        fb_player_button(0, 12, 6, "BACK", PLAYER_ACT_BACK);
+        fb_player_button(7, 12, 6, "STOP", PLAYER_ACT_STOP);
+        fb_player_button(14, 12, 6, "RPT", PLAYER_ACT_RPT);
+    } else if (view == 2u) {
         // ══ オプション画面 ══
         opt_count = 0;
         if (pl_find(opt_song) == PL_NONE && sav.count < MAX_PL)
@@ -1363,6 +1441,25 @@ static void update_header(void) {
     UINT16 secs;
     UINT8 mn, sc;
 
+    if (view == VIEW_PLAYER) {
+        if (paused && (scroll_pos & 4u)) {
+            for (j = 3; j <= 11; j++) fb[3][j] = T_SPACE;
+        } else {
+            secs = vbl_cnt / 60u;
+            mn = (UINT8)(secs / 60u);
+            sc = (UINT8)(secs % 60u);
+            if (mn > 9u) mn = 9;
+            fb[3][3] = CHR('0' + mn);
+            fb[3][4] = CHR(':');
+            fb[3][5] = CHR('0' + sc / 10u);
+            fb[3][6] = CHR('0' + sc % 10u);
+            fb_duration();
+        }
+        set_bkg_tiles(3, 3, 9, 1, &fb[3][3]);
+        scroll_dirty = 0;
+        return;
+    }
+
     // 行0: タイトルスクロール (header_scroll_posが変わった時のみ)
     if (scroll_dirty & 1u) {
         for (j = 1; j < 19; j++) fb[0][j] = T_SPACE;
@@ -1519,18 +1616,34 @@ static void prev_track(void) {
     sync_cursors();
 }
 
-static void process_android_command(void) {
-    UINT8 cmd;
-    UINT8 arg;
-
-    cmd = ANDROID_CMD_ADDR;
-    if (cmd == ANDROID_CMD_NONE) return;
-
-    arg = ANDROID_CMD_ARG_ADDR;
-    ANDROID_CMD_ADDR = ANDROID_CMD_NONE;
-    ANDROID_CMD_ARG_ADDR = 0u;
-
-    if (cmd == ANDROID_CMD_TOGGLE) {
+static void player_do_action(UINT8 action) {
+    if (action == PLAYER_ACT_PREV) {
+        reset_fade_state();
+        if (playing || paused) {
+            prev_track();
+        } else if (play_src == 1u && sav.count) {
+            if (pl_idx == PL_NONE || pl_idx >= sav.count) {
+                pl_idx = 0u;
+            } else if (pl_idx == 0u) {
+                pl_idx = (sav.repeat == 2u) ? (UINT8)(sav.count - 1u) : 0u;
+            } else {
+                pl_idx--;
+            }
+            gbs_start(sav.tracks[pl_idx]);
+            sync_cursors();
+        } else {
+            if (cur_song > 0u) {
+                gbs_start((UINT8)(cur_song - 1u));
+            } else if (sav.repeat == 2u) {
+                gbs_start((UINT8)(GBS_NUM_SONGS - 1u));
+            } else {
+                gbs_start(cur_song);
+            }
+            play_src = 0u;
+            pl_idx = PL_NONE;
+            sync_cursors();
+        }
+    } else if (action == PLAYER_ACT_TOGGLE) {
         if (paused) {
             gbs_resume();
         } else if (playing) {
@@ -1538,16 +1651,7 @@ static void process_android_command(void) {
         } else {
             android_play_current_source();
         }
-        return;
-    }
-
-    if (cmd == ANDROID_CMD_STOP) {
-        reset_fade_state();
-        gbs_stop();
-        return;
-    }
-
-    if (cmd == ANDROID_CMD_NEXT) {
+    } else if (action == PLAYER_ACT_NEXT) {
         reset_fade_state();
         if (playing || paused) {
             next_track();
@@ -1574,35 +1678,49 @@ static void process_android_command(void) {
             pl_idx = PL_NONE;
             sync_cursors();
         }
+    } else if (action == PLAYER_ACT_BACK) {
+        view = player_prev_view;
+        if (view == VIEW_OPT || view == VIEW_PLAYER) view = VIEW_SONGS;
+        redraw = 1;
+    } else if (action == PLAYER_ACT_STOP) {
+        reset_fade_state();
+        gbs_stop();
+    } else if (action == PLAYER_ACT_RPT) {
+        sav.repeat = (UINT8)((sav.repeat + 1u) % 3u);
+        sav_rw(1);
+        sync_android_status();
+        redraw = 1;
+    }
+}
+
+static void process_android_command(void) {
+    UINT8 cmd;
+    UINT8 arg;
+
+    cmd = ANDROID_CMD_ADDR;
+    if (cmd == ANDROID_CMD_NONE) return;
+
+    arg = ANDROID_CMD_ARG_ADDR;
+    ANDROID_CMD_ADDR = ANDROID_CMD_NONE;
+    ANDROID_CMD_ARG_ADDR = 0u;
+
+    if (cmd == ANDROID_CMD_TOGGLE) {
+        player_do_action(PLAYER_ACT_TOGGLE);
+        return;
+    }
+
+    if (cmd == ANDROID_CMD_STOP) {
+        player_do_action(PLAYER_ACT_STOP);
+        return;
+    }
+
+    if (cmd == ANDROID_CMD_NEXT) {
+        player_do_action(PLAYER_ACT_NEXT);
         return;
     }
 
     if (cmd == ANDROID_CMD_PREV) {
-        reset_fade_state();
-        if (playing || paused) {
-            prev_track();
-        } else if (play_src == 1u && sav.count) {
-            if (pl_idx == PL_NONE || pl_idx >= sav.count) {
-                pl_idx = 0u;
-            } else if (pl_idx == 0u) {
-                pl_idx = (sav.repeat == 2u) ? (UINT8)(sav.count - 1u) : 0u;
-            } else {
-                pl_idx--;
-            }
-            gbs_start(sav.tracks[pl_idx]);
-            sync_cursors();
-        } else {
-            if (cur_song > 0u) {
-                gbs_start((UINT8)(cur_song - 1u));
-            } else if (sav.repeat == 2u) {
-                gbs_start((UINT8)(GBS_NUM_SONGS - 1u));
-            } else {
-                gbs_start(cur_song);
-            }
-            play_src = 0u;
-            pl_idx = PL_NONE;
-            sync_cursors();
-        }
+        player_do_action(PLAYER_ACT_PREV);
         return;
     }
 
@@ -1624,6 +1742,25 @@ static void process_android_command(void) {
         sav_rw(1);
         sync_android_status();
         redraw = 1;
+    }
+
+    if (cmd == ANDROID_CMD_PLAYER_DOWN) {
+        if (view == VIEW_PLAYER && arg <= PLAYER_ACT_RPT) {
+            player_sel = arg;
+            player_press_action = arg;
+            player_press_timer = 0u;
+            player_do_action(arg);
+            redraw = 1;
+        }
+        return;
+    }
+
+    if (cmd == ANDROID_CMD_PLAYER_UP) {
+        if (player_press_action == arg) {
+            player_press_action = PLAYER_ACT_NONE;
+            redraw = 1;
+        }
+        return;
     }
 }
 
@@ -1663,6 +1800,59 @@ static void handle_input(void) {
     UINT8 ud, move, k, target;
     UINT8 *curs;
     UINT8 mx;
+
+    if ((cj & (J_START | J_SELECT)) == (J_START | J_SELECT) &&
+        (j & (J_START | J_SELECT))) {
+        if (view == VIEW_PLAYER) {
+            view = player_prev_view;
+            if (view == VIEW_OPT || view == VIEW_PLAYER) view = VIEW_SONGS;
+        } else {
+            player_prev_view = (view == VIEW_OPT) ? prev_view : view;
+            player_sel = PLAYER_ACT_TOGGLE;
+            player_press_action = PLAYER_ACT_NONE;
+            player_press_timer = 0u;
+            player_cursor_timer = PLAYER_CURSOR_TIMEOUT;
+            grab = PL_NONE;
+            view = VIEW_PLAYER;
+        }
+        pj = cj;
+        redraw = 1;
+        return;
+    }
+
+    if (view == VIEW_PLAYER) {
+        pj = cj;
+        if (j) {
+            player_cursor_timer = PLAYER_CURSOR_TIMEOUT;
+        }
+        if (j & J_LEFT) {
+            if (player_sel == 0u) player_sel = PLAYER_ACT_RPT;
+            else player_sel--;
+            redraw = 1;
+        }
+        if (j & J_RIGHT) {
+            player_sel = (UINT8)((player_sel + 1u) % 6u);
+            redraw = 1;
+        }
+        if (j & J_UP) {
+            if (player_sel >= 3u) player_sel = (UINT8)(player_sel - 3u);
+            redraw = 1;
+        }
+        if (j & J_DOWN) {
+            if (player_sel < 3u) player_sel = (UINT8)(player_sel + 3u);
+            redraw = 1;
+        }
+        if (j & J_A) {
+            player_press_action = player_sel;
+            player_press_timer = 6u;
+            player_do_action(player_sel);
+            redraw = 1;
+        }
+        if (j & J_B) {
+            player_do_action(PLAYER_ACT_BACK);
+        }
+        return;
+    }
 
     // オプション画面
     if (view == 2u) {
@@ -1895,6 +2085,11 @@ void main(void) {
     opt_sel  = 0;
     sel_hold_cnt = 0;
     sel_triggered = 0;
+    player_sel = PLAYER_ACT_TOGGLE;
+    player_prev_view = VIEW_SONGS;
+    player_press_action = PLAYER_ACT_NONE;
+    player_press_timer = 0;
+    player_cursor_timer = PLAYER_CURSOR_TIMEOUT;
     header_scroll_pos = 0;
     header_scroll_wait = 0;
     header_scroll_wrap = 0;
@@ -1915,12 +2110,7 @@ void main(void) {
         sync_cursors();
     } else {
         view = 0;
-#if GBS_COMPAT_GS
-        playing = 0;
-        paused = 0;
-#else
         play_from_sel();
-#endif
     }
 
     fade_vol = PL_NONE;
@@ -2061,6 +2251,20 @@ void main(void) {
             prev_pl_sel = pl_sel;
         }
         update_header();
+
+        if (player_press_timer) {
+            player_press_timer--;
+            if (!player_press_timer) {
+                player_press_action = PLAYER_ACT_NONE;
+                redraw = 1;
+            }
+        }
+        if (view == VIEW_PLAYER && player_cursor_timer) {
+            player_cursor_timer--;
+            if (!player_cursor_timer) {
+                redraw = 1;
+            }
+        }
 
         handle_input();
         if (redraw) {

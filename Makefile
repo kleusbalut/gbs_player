@@ -58,7 +58,7 @@ build_dir:
 # build/ フォルダが存在しても失敗しないよう order-only 依存関係を使用
 $(OUT): $(PLAYER) | build_dir
 	$(PY) tools/build.py merge $(PLAYER) "$(GBS)" $@
-	@echo Done: $(OUT)
+	@$(PY) -c "print('Done: $(OUT)')"
 
 android-assets:
 	$(MAKE) -B $(OUT) GBDK=$(GBDK) GBS="$(GBS)" PY=$(PY)
