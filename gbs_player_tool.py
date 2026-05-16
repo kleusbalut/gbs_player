@@ -713,6 +713,50 @@ class SaveData:
         with open(path, "wb") as f:
             f.write(data[:8192])
 
+    def to_dict(self):
+        self._normalize()
+        return {
+            "count": self.count,
+            "tracks": self.tracks[:MAX_PL],
+            "repeat": self.repeat,
+            "fade_time": self.fade_time,
+            "mono": self.mono,
+            "silence": self.silence,
+            "track_time": self.track_time[:self.num_songs],
+            "name_magic": self.name_magic,
+            "song_names": self.song_names[:self.num_songs],
+            "custom_title": self.custom_title,
+            "custom_author": self.custom_author,
+        }
+
+    @classmethod
+    def from_dict(cls, num_songs, data):
+        sav = cls(num_songs)
+        if not isinstance(data, dict):
+            return sav
+        def as_int(value, default=0):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        sav.count = as_int(data.get("count"), sav.count)
+        sav.tracks = [as_int(value) for value in (data.get("tracks", sav.tracks) or [])]
+        sav.repeat = as_int(data.get("repeat"), sav.repeat)
+        sav.fade_time = as_int(data.get("fade_time"), sav.fade_time)
+        sav.mono = as_int(data.get("mono"), sav.mono)
+        sav.silence = as_int(data.get("silence"), sav.silence)
+        sav.track_time = [as_int(value) for value in (data.get("track_time", sav.track_time) or [])]
+        sav.name_magic = as_int(data.get("name_magic"), sav.name_magic)
+        sav.song_names = [str(name) for name in (data.get("song_names", sav.song_names) or [])]
+        sav.custom_title = str(data.get("custom_title", sav.custom_title) or "")
+        sav.custom_author = str(data.get("custom_author", sav.custom_author) or "")
+        sav._normalize()
+        while len(sav.song_names) < sav.num_songs:
+            sav.song_names.append("")
+        sav.song_names = sav.song_names[:sav.num_songs]
+        return sav
+
     def state_tuple(self):
         return (
             self.count,
@@ -854,6 +898,8 @@ class SavEditorApp:
 
     def _save_config(self):
         self._sync_build_settings_vars()
+        if threading.current_thread() is threading.main_thread():
+            self._store_active_entry()
         data = dict(self.config)
         data["gbdk_path"] = self.gbdk_path
         data["msys_bash_path"] = self.msys_bash_path
@@ -867,6 +913,7 @@ class SavEditorApp:
             {
                 "source": e.source_path,
                 "sav": e.sav_path,
+                "sav_data": e.sav.to_dict() if e.sav else None,
                 "last_selected_track": e.last_selected_track,
             }
             for e in self.entries
@@ -933,12 +980,6 @@ class SavEditorApp:
 
     def _on_close(self):
         self._store_active_entry()
-        if self._dirty and self.sav:
-            ans = messagebox.askyesnocancel(self.tr("unsaved_title"), self.tr("unsaved_msg"))
-            if ans is None:
-                return
-            if ans:
-                self._save_sav()
         self._save_config()
         self.root.destroy()
 
@@ -1341,11 +1382,24 @@ class SavEditorApp:
 
     def _prepare_android_save_overwrite(self, entries):
         overwrite_save = bool(self.overwrite_save_var.get())
-        if overwrite_save and self.sav:
+        if overwrite_save or entries:
             self._sync_current_song_edit()
             self._sync_metadata_fields()
             self._store_active_entry()
-            return [entry for entry in entries if entry and entry.sav]
+        forced_entries = [
+            entry for entry in entries
+            if (
+                entry
+                and entry.sav
+                and entry.gbs_info
+                and entry.gbs_info.get("load_addr", 0x4000) < 0x4000
+                and self._entry_has_editor_save_data(entry)
+            )
+        ]
+        if (overwrite_save and self.sav) or forced_entries:
+            if overwrite_save:
+                return [entry for entry in entries if entry and entry.sav]
+            return forced_entries
         return None
 
     def _update_state(self):
@@ -1544,8 +1598,8 @@ class SavEditorApp:
     def _refresh_sources(self):
         self.source_list.delete(0, tk.END)
         for entry in self.entries:
-            marker = "*" if entry.dirty else " "
-            self.source_list.insert(tk.END, f"{marker} {entry.display_name}")
+            self.source_list.insert(tk.END, entry.display_name)
+        self.source_list.selection_clear(0, tk.END)
         if self.current_index is not None and 0 <= self.current_index < len(self.entries):
             self.source_list.selection_set(self.current_index)
 
@@ -1607,6 +1661,7 @@ class SavEditorApp:
                 if idx != self.current_index:
                     self._activate_entry(idx)
             return
+        self._store_active_entry()
         moved = self.entries.pop(src)
         self.entries.insert(dst, moved)
         if self.current_index is None:
@@ -1621,42 +1676,41 @@ class SavEditorApp:
         self.source_list.see(self.current_index)
         self._save_config()
 
-    def _create_entry_from_source(self, path, sav_path=None, last_selected_track=0):
+    def _create_entry_from_source(self, path, sav_path=None, sav_data=None, dirty=False, last_selected_track=0):
         info = parse_source_info(path)
-        sav = SaveData(info["num_songs"])
+        sav = SaveData.from_dict(info["num_songs"], sav_data) if sav_data else SaveData(info["num_songs"])
         loaded_sav = None
-        candidates = []
-        if sav_path:
-            candidates.append(sav_path)
-        candidates.append(os.path.splitext(path)[0] + ".sav")
-        for candidate in candidates:
-            if candidate and os.path.isfile(candidate):
-                try:
-                    sav.load(candidate)
-                    loaded_sav = candidate
-                    break
-                except Exception:
-                    pass
+        if sav_data:
+            loaded_sav = sav_path if sav_path and os.path.isfile(sav_path) else None
+        else:
+            candidates = []
+            if sav_path:
+                candidates.append(sav_path)
+            candidates.append(os.path.splitext(path)[0] + ".sav")
+            for candidate in candidates:
+                if candidate and os.path.isfile(candidate):
+                    try:
+                        sav.load(candidate)
+                        loaded_sav = candidate
+                        break
+                    except Exception:
+                        pass
         entry = SourceEntry(
             source_path=path,
             gbs_info=info,
             sav=sav,
             sav_path=loaded_sav,
-            dirty=False,
+            dirty=bool(dirty),
             last_selected_track=last_selected_track,
             source_id=safe_id_from_path(path),
         )
         self.entries.append(entry)
-        self.gbs_info = info
-        self.sav = sav
-        self.sav_path = loaded_sav
-        self.gbs_path = path
         if not any(n != "" for n in sav.song_names) and not any(v != 0 for v in sav.track_time):
-            self._auto_load_song_names()
+            self._auto_load_song_names(path=path, sav=sav)
         elif not any(n != "" for n in sav.song_names):
-            self._auto_load_song_names(load_times=False)
+            self._auto_load_song_names(load_times=False, path=path, sav=sav)
         entry.sav = sav
-        entry.sav_path = self.sav_path
+        entry.sav_path = loaded_sav
         return entry
 
     def _add_source_paths(self, paths):
@@ -1705,6 +1759,8 @@ class SavEditorApp:
                 entry = self._create_entry_from_source(
                     path,
                     sav_path=item.get("sav"),
+                    sav_data=item.get("sav_data"),
+                    dirty=False,
                     last_selected_track=int(item.get("last_selected_track", 0) or 0),
                 )
                 existing.add(key)
@@ -1871,20 +1927,22 @@ class SavEditorApp:
         except Exception as e:
             messagebox.showerror(self.tr("error"), str(e))
 
-    def _auto_load_song_names(self, load_times=True):
-        if not self.gbs_path or not self.sav:
+    def _auto_load_song_names(self, load_times=True, path=None, sav=None):
+        source_path = path or self.gbs_path
+        target_sav = sav or self.sav
+        if not source_path or not target_sav:
             return
-        base = os.path.splitext(self.gbs_path)[0]
-        candidates = [base + ".names.txt", os.path.join(os.path.dirname(self.gbs_path) or ".", "songnames.txt")]
+        base = os.path.splitext(source_path)[0]
+        candidates = [base + ".names.txt", os.path.join(os.path.dirname(source_path) or ".", "songnames.txt")]
         for path in candidates:
             if os.path.isfile(path):
                 try:
-                    names, times, _ = load_song_list(path, self.sav.num_songs)
-                    for i in range(self.sav.num_songs):
-                        self.sav.song_names[i] = names[i]
+                    names, times, _ = load_song_list(path, target_sav.num_songs)
+                    for i in range(target_sav.num_songs):
+                        target_sav.song_names[i] = names[i]
                         if load_times and times[i] is not None:
-                            self.sav.track_time[i] = times[i]
-                    self.sav.name_magic = NAME_MAGIC
+                            target_sav.track_time[i] = times[i]
+                    target_sav.name_magic = NAME_MAGIC
                     self._set_status(self.tr("song_names_loaded", name=os.path.basename(path)))
                 except Exception:
                     pass
@@ -2481,12 +2539,17 @@ class SavEditorApp:
         self._log_event(self.tr("auto_sync"))
         self.root.after(100, self._pull_android_sav)
 
-    def _run_logged(self, args, cwd=None, shell=False):
+    def _run_logged(self, args, cwd=None, shell=False, env_update=None):
         self._append_log(f"$ {' '.join(args) if isinstance(args, list) else args}\n")
+        env = None
+        if env_update:
+            env = os.environ.copy()
+            env.update(env_update)
         proc = subprocess.Popen(
             args,
             cwd=cwd or APP_DIR,
             shell=shell,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -2576,6 +2639,32 @@ class SavEditorApp:
                 else:
                     f.write("\n")
 
+    def _entry_has_editor_save_data(self, entry):
+        sav = entry.sav if entry else None
+        if not sav:
+            return False
+        return (
+            sav.count > 0
+            or sav.repeat != 0
+            or sav.fade_time != 2
+            or sav.mono != 0
+            or sav.silence != 0
+            or sav.name_magic == NAME_MAGIC
+            or sav.custom_title
+            or sav.custom_author
+            or any(n != "" for n in sav.song_names)
+            or any(t != 0 for t in sav.track_time)
+        )
+
+    def _staged_seed_sav_for_android(self, entry):
+        if not self._entry_has_editor_save_data(entry):
+            return None
+        stage_dir = os.path.join(APP_DIR, "build", "source_inputs")
+        os.makedirs(stage_dir, exist_ok=True)
+        path = os.path.join(stage_dir, (entry.source_id or safe_id_from_path(entry.source_path)) + ".seed.sav")
+        entry.sav.save(path)
+        return path
+
     def _staged_source_for_build(self, entry):
         src = os.path.abspath(entry.source_path)
         ext = os.path.splitext(src)[1].lower()
@@ -2588,16 +2677,7 @@ class SavEditorApp:
         staged_base = os.path.splitext(staged)[0]
         names_src = base + ".names.txt"
         staged_names = staged_base + ".names.txt"
-        has_editor_names = (
-            entry.sav
-            and (
-                entry.sav.name_magic == NAME_MAGIC
-                or entry.sav.custom_title
-                or entry.sav.custom_author
-                or any(n != "" for n in entry.sav.song_names)
-                or any(t != 0 for t in entry.sav.track_time)
-            )
-        )
+        has_editor_names = self._entry_has_editor_save_data(entry)
         if has_editor_names:
             self._write_staged_song_list(entry, staged_names)
         elif os.path.isfile(names_src):
@@ -2607,6 +2687,11 @@ class SavEditorApp:
             if os.path.isfile(songnames):
                 shutil.copy2(songnames, staged_names)
         return staged
+
+    def _build_env_for_entry(self, entry):
+        if entry and entry.gbs_info and entry.gbs_info.get("load_addr", 0x4000) < 0x4000:
+            return {"GBS_EMBED_NAMES": "off"}
+        return None
 
     def _build_sources(self, entries, android_assets=False, open_folder=False):
         entries = [e for e in entries if e]
@@ -2641,14 +2726,10 @@ class SavEditorApp:
                 self._post_status(self.tr("build_started", name=entry.display_name))
                 self._log_event(self.tr("build_started", name=entry.display_name))
                 self._append_log(f"\n== {entry.display_name} ==\n")
-                if entry.dirty:
-                    if not entry.sav_path:
-                        entry.sav_path = os.path.splitext(entry.source_path)[0] + ".sav"
-                    entry.sav.save(entry.sav_path)
-                    entry.dirty = False
                 target = "android-assets" if android_assets else ""
                 build_source = self._staged_source_for_build(entry)
-                self._run_logged(self._make_command(target, build_source, entry.sav_path), cwd=APP_DIR)
+                build_sav = self._staged_seed_sav_for_android(entry) if android_assets else entry.sav_path
+                self._run_logged(self._make_command(target, build_source, build_sav), cwd=APP_DIR, env_update=self._build_env_for_entry(entry))
                 output = self._copy_build_outputs(entry, metadata_source=build_source)
                 last_output = output
                 self._append_log(f"output: {output}\n")
@@ -2963,10 +3044,11 @@ class SavEditorApp:
                 self.root.after(0, finish)
         threading.Thread(target=worker, daemon=True).start()
 
-    def _install_android_apk_sync(self, overwrite_save=False, overwrite_entries=None):
-        apk = self._android_apk_path()
+    def _install_android_apk_sync(self, overwrite_save=False, overwrite_entries=None, apk_path=None):
+        apk = apk_path or self._android_apk_path()
         if not os.path.isfile(apk):
             raise FileNotFoundError(apk)
+        self._append_log(f"{self.tr('android_install')}: {apk}\n")
         self._resolve_adb_device_serial_sync()
         self._run_adb_logged_sync(["install", "-r", apk], timeout=180)
         if overwrite_save:
@@ -3008,7 +3090,11 @@ class SavEditorApp:
             ".\\gradlew.bat assembleDebug"
         )
         self._run_logged(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], cwd=ANDROID_APP_DIR)
-        return self._android_apk_path()
+        apk = self._android_apk_path()
+        if not os.path.isfile(apk):
+            raise FileNotFoundError(apk)
+        self._append_log(f"apk: {apk}\n")
+        return apk
 
     def _build_android_apk(self, install_after=False):
         if install_after and not self._require_adb_device():
@@ -3027,7 +3113,7 @@ class SavEditorApp:
                 if install_after:
                     self._log_event(self.tr("android_install"))
                     self._post_status(self.tr("android_install"))
-                    self._install_android_apk_sync(overwrite_save=overwrite_save, overwrite_entries=overwrite_entries)
+                    self._install_android_apk_sync(overwrite_save=overwrite_save, overwrite_entries=overwrite_entries, apk_path=apk)
                     self._set_progress(2, 2)
                 self._log_event(self.tr("build_done", path=apk))
                 self._post_status(self.tr("build_done", path=apk))
@@ -3063,7 +3149,7 @@ class SavEditorApp:
                 self._set_progress(len(self.entries) + 1, len(self.entries) + 2)
                 self._log_event(self.tr("android_install"))
                 self._post_status(self.tr("android_install"))
-                self._install_android_apk_sync(overwrite_save=overwrite_save, overwrite_entries=overwrite_entries)
+                self._install_android_apk_sync(overwrite_save=overwrite_save, overwrite_entries=overwrite_entries, apk_path=apk)
                 self._set_progress(len(self.entries) + 2, len(self.entries) + 2)
                 self._log_event(self.tr("build_done", path=apk))
                 self._post_status(self.tr("build_done", path=apk))

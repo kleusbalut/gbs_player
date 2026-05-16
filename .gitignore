@@ -24,3 +24,4 @@ AGENTS.md
 CLAUDE.md
 apps/android/local.properties
 vendor
+*.names.txt
